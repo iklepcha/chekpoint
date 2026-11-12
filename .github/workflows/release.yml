@@ -1,0 +1,48 @@
+name: Publish Checkpoint release
+on:
+  push:
+    branches: [main]
+    paths: [releases/version.txt]
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: checkpoint-release
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check source and catalog
+        run: |
+          node --check dist/app.js
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path('dist/catalog.json').read_text())
+          assert len(data['games']) == 42
+          assert sum(len(g['offers']) for g in data['games']) == 207
+          assert all(g['id'] and g['name'] and g['offers'] for g in data['games'])
+          print('Catalog validated: 42 games, 207 offers')
+          PY
+      - name: Package and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(cat releases/version.txt)"
+          [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          notes="releases/$version.md"
+          test -f "$notes"
+          if gh release view "$version" >/dev/null 2>&1; then
+            echo "Release already exists; leaving it unchanged."
+            exit 0
+          fi
+          zip -r "checkpoint-$version.zip" dist scripts README.md DESIGN-RESEARCH.md "$notes" -x '*/__pycache__/*' '*.pyc'
+          sha256sum "checkpoint-$version.zip" > SHA256SUMS.txt
+          gh release create "$version" "checkpoint-$version.zip" SHA256SUMS.txt --target "$GITHUB_SHA" --title "Checkpoint $version — интерактивный прототип" --notes-file "$notes"
